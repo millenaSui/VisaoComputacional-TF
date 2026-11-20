@@ -1,0 +1,6 @@
+services:
+  opencv_retificador:
+    build: .
+    volumes:
+      - ./output:/app/output
+      - ./dataset:/app/dataset
