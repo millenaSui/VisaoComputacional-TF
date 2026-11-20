@@ -169,8 +169,8 @@ def compute_vanishing_point_homography(pts_src, max_w, max_h):
 
 def estimate_aspect_ratio_from_vanishing_points(pts_src, img_shape):
     """
-    Estima a distância focal da câmera a partir da ortogonalidade dos pontos de fuga
-    e calcula a proporção real (largura / altura) do quadro no espaço 3D.
+    Estima a distância focal de forma adaptativa usando o ângulo de convergência
+    das bordas opostas como peso de confiança, e calcula a proporção real 3D do quadro.
 
     :param pts_src: Pontos ordenados do quadro [tl, tr, br, bl] (4, 2).
     :param img_shape: Shape da imagem original (img.shape).
@@ -178,34 +178,49 @@ def estimate_aspect_ratio_from_vanishing_points(pts_src, img_shape):
     """
     h_img, w_img = img_shape[:2]
     cx, cy = w_img / 2.0, h_img / 2.0
-    max_dim = max(w_img, h_img)
+    max_dim = float(max(w_img, h_img))
 
+    # coordenadas homogêneas dos pontos do quadro
+    tl_2d, tr_2d, br_2d, bl_2d = pts_src.astype(np.float64)
+
+    # ângulo de convergência entre bordas opostas
+    def angle_between(v_a, v_b):
+        n_a, n_b = np.linalg.norm(v_a), np.linalg.norm(v_b)
+        if n_a < 1e-8 or n_b < 1e-8:
+            return 0.0
+        cos_ang = np.clip(np.dot(v_a, v_b) / (n_a * n_b), -1.0, 1.0)
+        return float(np.degrees(np.arccos(cos_ang)))
+
+    angle_h = angle_between(tr_2d - tl_2d, br_2d - bl_2d)  # convergência horizontal
+    angle_v = angle_between(bl_2d - tl_2d, br_2d - tr_2d)  # convergência vertical
+    min_angle = min(angle_h, angle_v)
+
+    # peso de confiança contínuo
+    confidence = float(np.clip((min_angle - 2.0) / 8.0, 0.0, 1.0))
+
+    # coordenadas homogêneas e pontos de fuga
     pts_h = np.hstack([pts_src.astype(np.float64), np.ones((4, 1), dtype=np.float64)])
     tl, tr, br, bl = pts_h
 
-    # retas das bordas opostas
-    l_top = np.cross(tl, tr)
-    l_bottom = np.cross(bl, br)
-    l_left = np.cross(tl, bl)
-    l_right = np.cross(tr, br)
+    v1 = np.cross(np.cross(tl, tr), np.cross(bl, br))
+    v2 = np.cross(np.cross(tl, bl), np.cross(tr, br))
 
-    # pontos de fuga (horizontal e vertical)
-    v1 = np.cross(l_top, l_bottom)
-    v2 = np.cross(l_left, l_right)
+    # fusão adaptativa entre o f estimado e o f_prior
+    f_prior = 1.2 * max_dim
+    f = f_prior
 
-    # estima a distância focal f
-    f = float(max_dim)
-    if np.abs(v1[2]) > 1e-8 and np.abs(v2[2]) > 1e-8:
+    if confidence > 0.0 and np.abs(v1[2]) > 1e-8 and np.abs(v2[2]) > 1e-8:
         v1_eucl = v1[:2] / v1[2]
         v2_eucl = v2[:2] / v2[2]
         f_sq = -((v1_eucl[0] - cx) * (v2_eucl[0] - cx) + (v1_eucl[1] - cy) * (v2_eucl[1] - cy))
-        if f_sq > 0:
-            f_est = np.sqrt(f_sq)
-            # garante um valor de distância focal plausível contra ruído nos cantos
-            if 0.3 * max_dim < f_est < 5.0 * max_dim:
-                f = f_est
 
-    # matriz intrínseca K e sua inversa
+        if f_sq > 0:
+            f_est = float(np.sqrt(f_sq))
+            # limita extremos físicos antes de ponderar
+            f_est = float(np.clip(f_est, 0.7 * max_dim, 4.0 * max_dim))
+            f = confidence * f_est + (1.0 - confidence) * f_prior
+
+    # estima a proporção real usando distância focal adaptativa
     K = np.array([
         [f, 0.0, cx],
         [0.0, f, cy],
@@ -213,11 +228,7 @@ def estimate_aspect_ratio_from_vanishing_points(pts_src, img_shape):
     ], dtype=np.float64)
     K_inv = np.linalg.inv(K)
 
-    # direções 3D dos pontos de fuga e vetor normal do plano do quadro
-    d1 = K_inv @ v1
-    d2 = K_inv @ v2
-    normal = np.cross(d1, d2)
-
+    normal = np.cross(K_inv @ v1, K_inv @ v2)
     if np.linalg.norm(normal) < 1e-12:
         return None
 
@@ -230,9 +241,8 @@ def estimate_aspect_ratio_from_vanishing_points(pts_src, img_shape):
             return None
         pts_3d.append(ray / denom)
 
+    # largura e altura reais no espaço 3D    
     tl_3d, tr_3d, br_3d, bl_3d = pts_3d
-
-    # largura e altura reais no espaço 3D
     w_3d = 0.5 * (np.linalg.norm(tr_3d - tl_3d) + np.linalg.norm(br_3d - bl_3d))
     h_3d = 0.5 * (np.linalg.norm(bl_3d - tl_3d) + np.linalg.norm(br_3d - tr_3d))
 
