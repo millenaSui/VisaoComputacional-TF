@@ -1,6 +1,10 @@
 services:
   opencv_retificador:
-    build: .
+    build:
+      context: .
+      cache_from:
+        - opencv_retificador:latest
     volumes:
-      - ./output:/app/output
       - ./dataset:/app/dataset
+      - ./output:/app/output
+      - ./models:/app/models

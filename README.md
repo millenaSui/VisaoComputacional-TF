@@ -15,6 +15,8 @@ O fluxo de execução da aplicação é automatizado e dividido nas seguintes et
 4. **Retificação de Perspectiva:** Calculam-se os pontos de fuga a partir da interseção das bordas opostas e determina-se a linha do horizonte para remover a distorção projetiva. Em seguida, estima-se a distância focal da câmera para recuperar a proporção real (altura/largura) do quadro no espaço 3D e compõe-se a retificação projetiva com um alinhamento afim (`cv2.getAffineTransform`). Por fim, aplica-se a matriz de homografia resultante (`cv2.warpPerspective`), tornando a imagem retangular, plana e fiel às dimensões originais da obra.
 5. **Corte e Salvamento:** Uma pequena margem de segurança (3.5%) é recortada das bordas para eliminar eventuais sombras ou reflexos residuais da moldura física. A imagem final tratada é salva no diretório `./output`.
 
+6. **Detecção humana:** o YOLOE recebe somente classes humanas (person, human, woman, man, child e baby). A imagem é avaliada em sua versão original e com contraste CLAHE; detecções com baixa confiança só são aceitas quando confirmadas pelas duas versões. Filtros de área e proporção reduzem objetos que não tenham forma compatível com uma pessoa.
+
 ## Execução
 
 Devido às dependências de sistema exigidas pelo `OpenCV`, a aplicação foi conteinerizada via **Docker** utilizando a versão `opencv-python-headless`. Isso garante um ambiente de execução leve e isolado, eliminando a necessidade de configurar dependências de interface gráfica (X11) ou instalar pacotes na máquina *host*.
@@ -30,3 +32,7 @@ No terminal, na raiz do projeto, execute:
 ```bash
 docker-compose up --build
 ```
+
+O Docker constrói as dependências uma vez e reutiliza o cache de camadas nas
+execuções seguintes. `requirements.txt` fixa as versões principais e volumes
+separam os diretórios de entrada, saída e modelo do sistema da imagem.

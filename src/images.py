@@ -1,7 +1,7 @@
 """
-Módulo para processar imagens. Ele carrega uma imagem, verifica se foi carregada corretamente
-e imprime informações sobre o processo. Para cada imagem, ele encontra o melhor quadro/frame,
-retifica a perspectiva e salva o resultado em um diretório de saída.
+Módulo para processar imagens. Ele carrega uma imagem, encontra o melhor quadro/frame,
+estima a proporção real 3D via pontos de fuga e distância focal adaptativa, retifica
+a perspectiva, detecta pessoas na obra com YOLOE-26 e salva o resultado.
 """
 
 import os
@@ -16,16 +16,20 @@ from src.utils import (
     calculate_area_quad,
     inner,
     compute_vanishing_point_homography,
-    estimate_aspect_ratio_from_vanishing_points
+    estimate_aspect_ratio_from_vanishing_points,
+    detect_people,
 )
 
-def process_images(path_img, path_output):
+
+def process_images(path_img, path_output, model=None, num_human_classes=6):
     """
-    Processa uma imagem, detecta o melhor quadro, estima a proporção real via
-    pontos de fuga e distância focal, retifica a perspectiva e salva o resultado.
+    Processa uma imagem, detecta o melhor quadro, retifica a perspectiva usando
+    pontos de fuga e distância focal adaptativa, identifica pessoas e salva o resultado.
 
     :param path_img: Caminho da imagem a ser processada.
-    :param path_output: Diretório onde a imagem retificada será salva.
+    :param path_output: Diretório onde a imagem final será salva.
+    :param model: Modelo YOLOE carregado (opcional).
+    :param num_human_classes: Quantidade de classes humanas no início da lista do modelo.
     """
     img = cv2.imread(path_img)
     if img is None:
@@ -41,6 +45,7 @@ def process_images(path_img, path_output):
         print(f"[ERRO] Quadro não identificado em {file_name}. Ignorada.")
         return
 
+    # Ordena os cantos do quadro
     pts_src = sort_points(points)
     (tl, tr, br, bl) = pts_src
 
@@ -53,7 +58,7 @@ def process_images(path_img, path_output):
     heightB = np.linalg.norm(tl - bl)
     max_h = max(int(heightA), int(heightB))
 
-    # Ajusta max_w e max_h para manter a proporção real 3D sem perder resolução
+    # Ajusta max_w e max_h para preservar a proporção real 3D
     aspect_ratio = estimate_aspect_ratio_from_vanishing_points(pts_src, img.shape)
     if aspect_ratio is not None and 0.1 < aspect_ratio < 10.0:
         if aspect_ratio >= 1.0:
@@ -67,14 +72,21 @@ def process_images(path_img, path_output):
     matrix = compute_vanishing_point_homography(pts_src, max_w, max_h)
     img_retificada = cv2.warpPerspective(img, matrix, (max_w, max_h))
 
-    # Garante corte de eventuais reflexos de moldura
-    margin_w = int(max_w * 0.06)
-    margin_h = int(max_h * 0.06)
+    # Garante corte de eventuais reflexos ou sobras de moldura
+    margin_w = int(max_w * 0.03)
+    margin_h = int(max_h * 0.03)
 
     if max_w > 2 * margin_w and max_h > 2 * margin_h:
         img_final = img_retificada[margin_h:max_h - margin_h, margin_w:max_w - margin_w]
     else:
         img_final = img_retificada
+
+    # Aplica YOLOE-26 na obra já retificada para identificar pessoas
+    if model is not None:
+        img_final, num_pessoas = detect_people(
+            img_final, model, conf=0.15, num_human_classes=num_human_classes
+        )
+        print(f"[INFO] Pessoas detectadas em {file_name}: {num_pessoas}")
 
     out_path = os.path.join(path_output, f"{file_name}")
     cv2.imwrite(out_path, img_final)
@@ -83,7 +95,7 @@ def process_images(path_img, path_output):
 
 def find_best_frame(img):
     """
-    Encontra o melhor quadro na imagem.
+    Encontra o melhor quadro na imagem usando detecção de bordas e análise de textura.
 
     :param img: Imagem a ser processada.
     :return: Pontos do melhor quadro encontrado, ou None se nenhum for encontrado.
@@ -97,19 +109,19 @@ def find_best_frame(img):
 
     borders_map = []
 
-    # auto canny adaptado à luz da foto
+    # Auto Canny adaptado à luz da foto
     borders_map.append(auto_canny(blur))
 
-    # relevos físicos de molduras complexas
+    # Relevos físicos de molduras complexas
     kernel_grad = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
     grad = cv2.morphologyEx(blur, cv2.MORPH_GRADIENT, kernel_grad)
     _, grad_thresh = cv2.threshold(grad, 50, 255, cv2.THRESH_BINARY)
     borders_map.append(grad_thresh)
 
-    # contraste local adaptado a variações de iluminação
+    # Contraste local adaptado a variações de iluminação
     thresh_adapt = cv2.adaptiveThreshold(
         blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 21, 5
-        )
+    )
     borders_map.append(thresh_adapt)
 
     candidates = []
@@ -124,7 +136,7 @@ def find_best_frame(img):
         for c in contours:
             contour_a = cv2.contourArea(c)
 
-            # quadro sem recortes
+            # Quadro sem recortes
             hull = cv2.convexHull(c)
             area_hull = cv2.contourArea(hull)
             if area_hull == 0:
@@ -138,9 +150,9 @@ def find_best_frame(img):
                 peri = cv2.arcLength(c, True)
                 aprox = cv2.approxPolyDP(c, 0.04 * peri, True)
 
-                if len(aprox) == 4: # quatro pontos, candidato a quadro
+                if len(aprox) == 4:
                     pts = aprox.reshape(4, 2)
-                else: # não é um quadrilátero (pode ser um quadro com recortes)
+                else:
                     pts = get_corners(c)
 
                 area_quad = calculate_area_quad(pts)
@@ -148,23 +160,27 @@ def find_best_frame(img):
                     _, _, w, h = cv2.boundingRect(pts)
                     if w > 50 and h > 50:
                         textura = calculate_inner_texture(gray, pts)
-                        candidates.append({"pts": pts, "area": area_quad, "textura": textura})
+                        candidates.append({
+                            "pts": pts,
+                            "area": area_quad,
+                            "textura": textura,
+                        })
 
     if not candidates:
         return None
 
-    # maior área p/ menor
+    # Maior área para menor
     candidates = sorted(candidates, key=lambda x: x["area"], reverse=True)
     unique_candidates = []
 
-    # remove duplicatas
+    # Remove duplicatas
     for cand in candidates:
         duplicate = False
         cX, cY = np.mean(cand["pts"], axis=0)
         for u in unique_candidates:
             if abs(cand["area"] - u["area"]) / u["area"] < 0.15:
                 uX, uY = np.mean(u["pts"], axis=0)
-                dist = np.sqrt((cX - uX)**2 + (cY - uY)**2)
+                dist = np.sqrt((cX - uX) ** 2 + (cY - uY) ** 2)
                 if dist < 80:
                     duplicate = True
                     break
@@ -176,12 +192,11 @@ def find_best_frame(img):
 
     target = unique_candidates[0]
 
-    # se existe um retângulo menor que tenha uma textura de pintura
-    # assume que a parte de fora é a moldura e descarta
+    # Se existe um retângulo menor com textura de pintura, assume que o externo é moldura
     for cand in unique_candidates[1:]:
         if 0.20 * target["area"] < cand["area"] < 0.95 * target["area"]:
             if inner(cand["pts"], target["pts"]):
-                if cand["textura"] > 50: 
+                if cand["textura"] > 50:
                     target = cand
 
     return target["pts"] * ratio
