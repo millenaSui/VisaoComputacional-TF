@@ -73,8 +73,8 @@ def process_images(path_img, path_output, model=None, num_human_classes=6):
     img_retificada = cv2.warpPerspective(img, matrix, (max_w, max_h))
 
     # Garante corte de eventuais reflexos ou sobras de moldura
-    margin_w = int(max_w * 0.03)
-    margin_h = int(max_h * 0.03)
+    margin_w = int(max_w * 0.30)
+    margin_h = int(max_h * 0.30)
 
     if max_w > 2 * margin_w and max_h > 2 * margin_h:
         img_final = img_retificada[margin_h:max_h - margin_h, margin_w:max_w - margin_w]

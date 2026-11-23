@@ -14,7 +14,7 @@ OUTPUT_DIR = './output'
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 HUMAN_CLASSES = ["person", "woman", "man", "child", "baby", "human"]
-DISTRACTOR_CLASSES = ["painting", "artwork", "picture frame", "landscape"]
+DISTRACTOR_CLASSES = ["painting", "artwork", "picture frame", "landscape", "nature"]
 
 
 def main():
